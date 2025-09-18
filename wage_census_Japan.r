@@ -312,76 +312,87 @@ list_excel_files <- function(data_dir = "data") {
   files
 }
 
-read_all_years <- function(data_dir = "data") {
+
+read_all_years_safe <- function(data_dir = "data", workers = max(1, parallel::detectCores()-2)) {
   files <- list_excel_files(data_dir)
-  if (length(files) == 0) {
-    message("No Excel files found under: ", data_dir,
-            "\n- 作業ディレクトリに data/ があるか？",
-            "\n- 拡張子が .xls/.xlsx か？（大文字OK）",
-            "\n- パスが正しいか？（例: read_all_years('C:/.../data')）")
-    return(tibble())
+  sheet_index <- tibble(file = files) |>
+    mutate(year  = stringr::str_extract(file, "(19|20)\\d{2}") %>% as.integer(),
+           sheet = map(file, readxl::excel_sheets)) |>
+    unnest(sheet) |>
+    mutate(idx = row_number())
+  
+  plan(multisession, workers = workers)
+  
+  log_path <- "parse_errors.csv"
+  if (file.exists(log_path)) file.remove(log_path)
+  
+  safe_read <- function(file, sheet, year, idx) {
+    out <- try(read_sheet_tidy(file, sheet, year), silent = TRUE)
+    if (inherits(out, "try-error")) {
+      tibble(idx=idx, file=file, sheet=sheet, year=year,
+             error=as.character(attr(out, "condition")$message %||% "unknown")) |>
+        write.table(log_path, sep=",", row.names=FALSE, col.names=!file.exists(log_path), append=TRUE)
+      return(tibble()) # スキップ
+    }
+    out
   }
   
-  purrr::map_dfr(files, function(f) {
-    year <- stringr::str_extract(f, "(19|20)\\d{2}") %>% as.integer()
-    sheets <- readxl::excel_sheets(f)
-    purrr::map_dfr(sheets, ~read_sheet_tidy(f, .x, year_chr = year))
-  })
+  future_pmap_dfr(
+    list(sheet_index$file, sheet_index$sheet, sheet_index$year, sheet_index$idx),
+    safe_read,
+    .progress = TRUE
+  )
 }
 
-# ---- 使い方 ----
-# 1) data/2006, data/2024 のように年次毎のExcelを配置
-# 2) 下記を実行
-result <- read_all_years("data")
-
-
-
-
+result <- read_all_years_safe("data")
+# 完成物を保存
 readr::write_csv(result, "wage_panel_tidy.csv", na = "")
-# 3) 別名で保存したいときは適宜変更してください
+# 失敗ログ（あれば）
+if (file.exists("parse_errors.csv")) readr::read_csv("parse_errors.csv", show_col_types = FALSE) %>% print(n=20)
 
 
 
 
 
-
-library(tidyverse)
-library(readxl)
-library(future)
-library(furrr)
-
-# 1) ファイル×シートのインデックス表を作る（変数名は sheet_index に）
-files <- list_excel_files("data")
-
-sheet_index <- tibble(file = files) |>
-  mutate(
-    year  = stringr::str_extract(file, "(19|20)\\d{2}") %>% as.integer(),
-    sheet = map(file, readxl::excel_sheets)
-  ) |>
-  unnest(sheet) |>
-  mutate(idx = row_number()) |>
-  relocate(idx, file, sheet, year)
-
-# 2) 並列で“読むだけテスト”
-plan(multisession, workers = max(1, parallel::detectCores() - 2))
-
-check_one <- function(file, sheet, year) {
-  tryCatch({
-    invisible(read_sheet_tidy(file, sheet, year))
-    tibble(status = "ok", msg = NA_character_)
-  }, error = function(e) {
-    tibble(status = "error", msg = conditionMessage(e))
-  })
-}
-
-res <- future_pmap_dfr(
-  list(sheet_index$file, sheet_index$sheet, sheet_index$year),
-  check_one,
-  .progress = TRUE
-)
-
-diag <- bind_cols(sheet_index, res)
-bad  <- filter(diag, status == "error")
-
-# 問題箇所の上位を確認
-bad %>% arrange(idx) %>% slice_head(n = 20)
+# 
+# 
+# library(tidyverse)
+# library(readxl)
+# library(future)
+# library(furrr)
+# 
+# # 1) ファイル×シートのインデックス表を作る（変数名は sheet_index に）
+# files <- list_excel_files("data")
+# 
+# sheet_index <- tibble(file = files) |>
+#   mutate(
+#     year  = stringr::str_extract(file, "(19|20)\\d{2}") %>% as.integer(),
+#     sheet = map(file, readxl::excel_sheets)
+#   ) |>
+#   unnest(sheet) |>
+#   mutate(idx = row_number()) |>
+#   relocate(idx, file, sheet, year)
+# 
+# # 2) 並列で“読むだけテスト”
+# plan(multisession, workers = max(1, parallel::detectCores() - 2))
+# 
+# check_one <- function(file, sheet, year) {
+#   tryCatch({
+#     invisible(read_sheet_tidy(file, sheet, year))
+#     tibble(status = "ok", msg = NA_character_)
+#   }, error = function(e) {
+#     tibble(status = "error", msg = conditionMessage(e))
+#   })
+# }
+# 
+# res <- future_pmap_dfr(
+#   list(sheet_index$file, sheet_index$sheet, sheet_index$year),
+#   check_one,
+#   .progress = TRUE
+# )
+# 
+# diag <- bind_cols(sheet_index, res)
+# bad  <- filter(diag, status == "error")
+# 
+# # 問題箇所の上位を確認
+# bad %>% arrange(idx) %>% slice_head(n = 20)

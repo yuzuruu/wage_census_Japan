@@ -1,0 +1,12 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+data/
+*.xlsx
+*.xls
+.Rproj.user/
+.Rhistory
+.RData
+.Rproj.user
+*.zip

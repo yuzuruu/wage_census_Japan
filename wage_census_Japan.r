@@ -345,17 +345,28 @@ readr::write_csv(result, "wage_panel_tidy.csv", na = "")
 
 
 
-
-# 並列準備
+library(tidyverse)
+library(readxl)
 library(future)
 library(furrr)
-plan(multisession, workers = parallel::detectCores() - 2)
 
-# 1件ずつ: 読めればOK, エラーならメッセージ
+# 1) ファイル×シートのインデックス表を作る（変数名は sheet_index に）
+files <- list_excel_files("data")
+
+sheet_index <- tibble(file = files) |>
+  mutate(
+    year  = stringr::str_extract(file, "(19|20)\\d{2}") %>% as.integer(),
+    sheet = map(file, readxl::excel_sheets)
+  ) |>
+  unnest(sheet) |>
+  mutate(idx = row_number()) |>
+  relocate(idx, file, sheet, year)
+
+# 2) 並列で“読むだけテスト”
+plan(multisession, workers = max(1, parallel::detectCores() - 2))
+
 check_one <- function(file, sheet, year) {
   tryCatch({
-    # 実データ読み込みは重いので、まずは read_sheet_tidy を軽く実行
-    # 出力を捨ててもOK（読むだけ）
     invisible(read_sheet_tidy(file, sheet, year))
     tibble(status = "ok", msg = NA_character_)
   }, error = function(e) {
@@ -364,14 +375,13 @@ check_one <- function(file, sheet, year) {
 }
 
 res <- future_pmap_dfr(
-  list(grid$file, grid$sheet, grid$year),
+  list(sheet_index$file, sheet_index$sheet, sheet_index$year),
   check_one,
   .progress = TRUE
 )
 
-diag <- bind_cols(grid, res)
-bad  <- diag |> filter(status == "error")
+diag <- bind_cols(sheet_index, res)
+bad  <- filter(diag, status == "error")
 
-bad |> arrange(idx) |> head(20)   # 先頭20件だけ確認
-# 問題の idx / file / sheet / msg が並びます
-
+# 問題箇所の上位を確認
+bad %>% arrange(idx) %>% slice_head(n = 20)
